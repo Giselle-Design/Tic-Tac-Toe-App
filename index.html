@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Together • Tic-Tac-Toe</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#101322;color:#f5f5fc}
+*{box-sizing:border-box}
+body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at top,#282344,transparent 65%)}
+main{width:min(100%,480px)}
+header{text-align:center}
+h1{font-size:clamp(30px,7vw,42px);margin:6px 0}
+p{color:#acadc5;line-height:1.5}
+.eyebrow{color:#b7a4ff;font-size:12px;letter-spacing:3px;text-transform:uppercase}
+.players{display:flex;gap:12px;margin:24px 0 16px}
+.player{flex:1;padding:15px;border:1px solid #ffffff18;border-radius:15px;background:#1b1e31}
+.player strong{display:block;margin-bottom:6px}
+.player span{font-size:13px;color:#b7b9cf}
+.x{color:#78d9ff}
+.o{color:#ffb78f}
+.active{box-shadow:0 0 0 2px currentColor}
+#status{min-height:62px;display:grid;place-items:center;text-align:center;background:#24253f;border-radius:12px;padding:12px;font-weight:600}
+.board{position:relative;margin:20px auto;max-width:390px;aspect-ratio:1}
+.grid{height:100%;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.cell{padding:0;border-radius:16px;background:#202339;border:1px solid #ffffff10;font-size:clamp(40px,12vw,70px);font-weight:600}
+.cell:disabled{opacity:1}
+.cell:enabled:hover{background:#30344e;transform:translateY(-2px)}
+svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+line{stroke:#d9ceff;stroke-width:4;stroke-linecap:round;filter:drop-shadow(0 0 2px #b69cff)}
+button{font:inherit;cursor:pointer;transition:background .15s,transform .15s}
+button:disabled{cursor:default;opacity:.4}
+button:focus-visible,input:focus-visible{outline:3px solid #bba6ff;outline-offset:4px}
+.actions{display:flex;gap:10px}
+.actions button,#copy,#retry{border:0;border-radius:12px;padding:13px 16px;font-weight:650}
+.actions button{flex:1;background:#ae94ff;color:#171126}
+#again{background:#30334e;color:#eee}
+#copy{background:#f0eaff;color:#292039;white-space:nowrap}
+.invite{display:flex;gap:8px;margin-top:20px}
+input{width:100%;min-width:0;background:#191c30;color:#bdbed0;border:1px solid #ffffff20;border-radius:12px;padding:10px}
+footer{text-align:center;font-size:12px;margin-top:18px;color:#9194b0}
+#note{min-height:20px;text-align:center;font-size:13px;color:#c6b8ed;margin:10px 0}
+#retry{display:block;margin:12px auto;background:#30334e;color:white}
+#retry[hidden]{display:none}
+@media(max-width:380px){
+  body{padding:14px}
+  .invite{flex-wrap:wrap}
+  #copy{width:100%}
+  .player{padding:11px}
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">A little friendly competition</div>
+    <h1>Tic. Tac. Together.</h1>
+    <p>Two players. One link. Three in a row.</p>
+  </header>
+
+  <section class="players" aria-label="Players">
+    <div id="px" class="player x">
+      <strong>✕ Player 1 <small id="youX"></small></strong>
+      <span id="presenceX">Connecting…</span>
+    </div>
+    <div id="po" class="player o">
+      <strong>○ Player 2 <small id="youO"></small></strong>
+      <span id="presenceO">Waiting…</span>
+    </div>
+  </section>
+
+  <div id="status" role="status" aria-live="polite">
+    Connecting to the room…
+  </div>
+
+  <div class="board">
+    <div id="grid" class="grid" aria-label="Tic-tac-toe board"></div>
+    <svg viewBox="0 0 300 300" aria-hidden="true">
+      <line id="winLine" visibility="hidden"/>
+    </svg>
+  </div>
+
+  <div class="actions">
+    <button id="coin" disabled>🪙 Who goes first?</button>
+    <button id="again" disabled>Play again</button>
+  </div>
+
+  <div class="invite">
+    <input id="invite" readonly aria-label="Invite link">
+    <button id="copy" disabled>Copy invite link</button>
+  </div>
+
+  <button id="retry" hidden>Reconnect</button>
+  <div id="note" role="status"></div>
+
+  <footer>✕ + ○ · Private peer-to-peer play · Keep this tab open</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
+<script>
+'use strict';
+
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const isHost = !params.has('room');
+const me = isHost ? 'X' : 'O';
+
+const validID = s =>
+  typeof s === 'string' && /^ttt-[a-zA-Z0-9-]{8,80}$/.test(s);
+
+const newID = () => 'ttt-' + Array.from(
+  crypto.getRandomValues(new Uint8Array(16)),
+  n => n.toString(16).padStart(2, '0')
+).join('');
+
+const room = isHost
+  ? (validID(params.get('host')) ? params.get('host') : newID())
+  : params.get('room');
+
+const invite = new URL(location.href);
+invite.search = '';
+invite.hash = '';
+invite.searchParams.set('room', room);
+
+$('invite').value = invite.href;
+$(isHost ? 'youX' : 'youO').textContent = '(you)';
+
+if (isHost) {
+  const own = new URL(location.href);
+  own.search = '';
+  own.searchParams.set('host', room);
+  try {
+    history.replaceState(null, '', own);
+  } catch {}
+}
+
+const wins = [
+  [0,1,2], [3,4,5], [6,7,8],
+  [0,3,6], [1,4,7], [2,5,8],
+  [0,4,8], [2,4,6]
+];
+
+let state = {
+  board: Array(9).fill(''),
+  phase: 'ready',
+  turn: null,
+  winner: null,
+  line: null,
+  round: 1,
+  rev: 0
+};
+
+let peer;
+let conn;
+let online = false;
+let localReady = false;
+let message = '';
+let pending = false;
+let lastSeen = 0;
+let seenRoll = '';
+let connectTimer;
+
+const cells = Array.from({length: 9}, (_, i) => {
+  const button = document.createElement('button');
+  button.className = 'cell';
+  button.setAttribute(
+    'aria-label',
+    `Row ${Math.floor(i / 3) + 1}, column ${i % 3 + 1}: empty`
+  );
+  button.onclick = () => request('move', i);
+  $('grid').append(button);
+  return button;
+});
+
+function render() {
+  $('presenceX').textContent = (isHost ? localReady : online)
+    ? '● Connected'
+    : (isHost ? 'Connecting…' : 'Offline');
+
+  $('presenceO').textContent = (isHost ? online : localReady)
+    ? '● Connected'
+    : (isHost ? 'Waiting…' : 'Connecting…');
+
+  $('px').classList.toggle(
+    'active',
+    online && state.phase === 'playing' && state.turn === 'X'
+  );
+  $('po').classList.toggle(
+    'active',
+    online && state.phase === 'playing' && state.turn === 'O'
+  );
+
+  let banner;
+
+  if (!online) {
+    banner = isHost
+      ? 'Share your link to invite Player 2.'
+      : 'Connecting to Player 1…';
+  } else if (state.phase === 'ready') {
+    banner = 'You’re both here. Roll the coin to begin!';
+  } else if (state.phase === 'done') {
+    banner = state.winner
+      ? `Player ${state.winner === 'X' ? 1 : 2} (${state.winner}) wins!`
+      : 'Draw — Cat’s Game!';
+  } else {
+    banner =
+      `${state.turn === me ? 'Your turn' : 'Opponent’s turn'} · ` +
+      `Player ${state.turn === 'X' ? 1 : 2} (${state.turn})`;
+  }
+
+  $('status').textContent = message || banner;
+
+  cells.forEach((button, i) => {
+    const mark = state.board[i];
+
+    button.textContent = mark === 'X' ? '✕' : mark === 'O' ? '○' : '';
+    button.className = 'cell ' + (mark === 'X' ? 'x' : 'o');
+    button.disabled =
+      !online ||
+      pending ||
+      state.phase !== 'playing' ||
+      state.turn !== me ||
+      !!mark;
+
+    button.setAttribute(
+      'aria-label',
+      `Row ${Math.floor(i / 3) + 1}, column ${i % 3 + 1}: ${mark || 'empty'}`
+    );
+  });
+
+  $('coin').disabled = !online || pending || state.phase !== 'ready';
+  $('again').disabled = !online || pending || state.phase !== 'done';
+  $('copy').disabled = !localReady;
+  $('retry').hidden = online || !message;
+
+  const line = $('winLine');
+  line.setAttribute('visibility', state.line ? 'visible' : 'hidden');
+
+  if (state.line) {
+    const first = state.line[0];
+    const last = state.line[2];
+
+    line.setAttribute('x1', first % 3 * 100 + 50);
+    line.setAttribute('y1', Math.floor(first / 3) * 100 + 50);
+    line.setAttribute('x2', last % 3 * 100 + 50);
+    line.setAttribute('y2', Math.floor(last / 3) * 100 + 50);
+  }
+}
+
+function send(data) {
+  if (!conn?.open) return false;
+
+  try {
+    conn.send(data);
+    return true;
+  } catch {
+    disconnect();
+    return false;
+  }
+}
+
+function publish() {
+  send({type: 'state', state});
+  render();
+}
+
+// Only Player 1's browser accepts and applies game actions.
+// Round and revision checks reject stale or simultaneous requests.
+function apply(action, index, actor, round, rev) {
+  if (!online || round !== state.round || rev !== state.rev) {
+    send({type: 'state', state});
+    return;
+  }
+
+  if (action === 'roll' && state.phase === 'ready') {
+    state.turn = crypto.getRandomValues(new Uint8Array(1))[0] % 2
+      ? 'X'
+      : 'O';
+
+    state.phase = 'playing';
+    state.rev++;
+    publish();
+    announce();
+    return;
+  }
+
+  if (action === 'again' && state.phase === 'done') {
+    state = {
+      board: Array(9).fill(''),
+      phase: 'ready',
+      turn: null,
+      winner: null,
+      line: null,
+      round: state.round + 1,
+      rev: state.rev + 1
+    };
+
+    publish();
+    return;
+  }
+
+  if (
+    action === 'move' &&
+    state.phase === 'playing' &&
+    state.turn === actor &&
+    Number.isInteger(index) &&
+    index >= 0 &&
+    index < 9 &&
+    !state.board[index]
+  ) {
+    state.board[index] = actor;
+    state.line = wins.find(
+      pattern => pattern.every(i => state.board[i] === actor)
+    ) || null;
+
+    if (state.line) {
+      state.phase = 'done';
+      state.winner = actor;
+    } else if (state.board.every(Boolean)) {
+      state.phase = 'done';
+    } else {
+      state.turn = actor === 'X' ? 'O' : 'X';
+    }
+
+    state.rev++;
+    publish();
+    return;
+  }
+
+  send({type: 'state', state});
+}
+
+function announce() {
+  const key = state.round + ':' + state.turn;
+
+  if (
+    state.phase === 'playing' &&
+    state.board.every(value => !value) &&
+    seenRoll !== key
+  ) {
+    seenRoll = key;
+    const starter = state.turn;
+
+    setTimeout(() => {
+      window.alert(
+        `Player ${starter === 'X' ? 1 : 2} (${starter}) goes first!`
+      );
+    }, 0);
+  }
+}
+
+function request(action, index) {
+  if (!online || pending) return;
+
+  if (isHost) {
+    apply(action, index, 'X', state.round, state.rev);
+  } else {
+    pending = true;
+    render();
+
+    if (!send({
+      type: 'action',
+      action,
+      index,
+      round: state.round,
+      rev: state.rev
+    })) {
+      pending = false;
+      render();
+    }
+  }
+}
+
+function disconnect() {
+  const old = conn;
+  conn = null;
+  online = false;
+  pending = false;
+  clearTimeout(connectTimer);
+
+  message = 'Opponent disconnected. Share the link to play again.';
+  render();
+
+  if (old) old.close();
+}
+
+function attach(connection) {
+  // Reserve one opponent slot, including while a connection is opening.
+  if (conn) {
+    connection.on('open', () => {
+      connection.send({type: 'full'});
+      setTimeout(() => connection.close(), 200);
+    });
+    return;
+  }
+
+  conn = connection;
+
+  connectTimer = setTimeout(() => {
+    if (conn === connection && !online) {
+      disconnect();
+      message =
+        'Could not connect. Ask Player 1 to keep their tab open, then reconnect.';
+      render();
+    }
+  }, 20000);
+
+  connection.on('open', () => {
+    if (conn !== connection) return;
+
+    clearTimeout(connectTimer);
+    online = true;
+    pending = false;
+    lastSeen = Date.now();
+    message = '';
+
+    if (isHost) {
+      // A new opponent begins a fresh game.
+      state = {
+        board: Array(9).fill(''),
+        phase: 'ready',
+        turn: null,
+        winner: null,
+        line: null,
+        round: state.round + 1,
+        rev: state.rev + 1
+      };
+      publish();
+    } else {
+      render();
+    }
+  });
+
+  connection.on('data', data => {
+    if (
+      conn !== connection ||
+      !data ||
+      typeof data !== 'object'
+    ) return;
+
+    lastSeen = Date.now();
+
+    if (data.type === 'ping') {
+      send({type: 'pong'});
+      return;
+    }
+
+    if (data.type === 'pong') return;
+
+    if (data.type === 'full') {
+      message = 'This room already has two players.';
+      render();
+      return;
+    }
+
+    if (isHost && data.type === 'action') {
+      apply(data.action, data.index, 'O', data.round, data.rev);
+    }
+
+    if (
+      !isHost &&
+      data.type === 'state' &&
+      data.state &&
+      Array.isArray(data.state.board) &&
+      data.state.board.length === 9
+    ) {
+      state = data.state;
+      pending = false;
+      message = '';
+      render();
+      announce();
+    }
+  });
+
+  connection.on('close', () => {
+    if (conn !== connection) return;
+
+    const full = message === 'This room already has two players.';
+    disconnect();
+
+    if (full) {
+      message = 'This room already has two players.';
+      render();
+    }
+  });
+
+  connection.on('error', () => {
+    if (conn === connection) disconnect();
+  });
+}
+
+$('coin').onclick = () => request('roll');
+$('again').onclick = () => request('again');
+$('retry').onclick = () => location.reload();
+
+$('copy').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(invite.href);
+    $('note').textContent = 'Invite copied. Send it to your opponent!';
+  } catch {
+    $('invite').focus();
+    $('invite').select();
+    $('note').textContent = 'Copy the selected link with Ctrl+C or ⌘C.';
+  }
+
+  if (location.protocol === 'file:') {
+    $('note').textContent +=
+      ' Upload this file to GitHub Pages for a shareable web link.';
+  }
+};
+
+render();
+
+if (!validID(room)) {
+  message =
+    'Invalid room link. Open the page without ?room= to create a room.';
+  render();
+} else if (typeof Peer === 'undefined') {
+  message =
+    'PeerJS could not load. Check your internet connection and reconnect.';
+  render();
+} else {
+  peer = new Peer(isHost ? room : undefined, {debug: 0});
+
+  peer.on('open', () => {
+    localReady = true;
+    message = '';
+    render();
+
+    if (!isHost) {
+      attach(peer.connect(room, {
+        reliable: true,
+        serialization: 'json'
+      }));
+    }
+  });
+
+  peer.on('connection', connection => {
+    if (isHost) {
+      attach(connection);
+    } else {
+      connection.on('open', () => connection.close());
+    }
+  });
+
+  peer.on('error', error => {
+    if (
+      online &&
+      (error.type === 'network' || error.type === 'server-error')
+    ) {
+      $('note').textContent =
+        'Signaling service unavailable; your existing game can continue.';
+      return;
+    }
+
+    if (conn) disconnect();
+
+    if (error.type === 'unavailable-id') {
+      message =
+        'This host room is already open in another tab. Use the invite link to join.';
+    } else if (error.type === 'peer-unavailable') {
+      message =
+        'Room unavailable. Ask Player 1 to open their host page, then reconnect.';
+    } else {
+      message =
+        'Connection failed. Check your network, then reconnect.';
+    }
+
+    render();
+  });
+
+  peer.on('disconnected', () => {
+    if (!online) {
+      message = 'Signaling disconnected. Reconnect to try again.';
+      render();
+    } else {
+      $('note').textContent =
+        'Signaling disconnected; your current game can continue.';
+    }
+  });
+
+  peer.on('close', () => {
+    localReady = false;
+    disconnect();
+  });
+}
+
+// Closed connections pause immediately when reported by WebRTC.
+// Silent failures are detected after approximately 15–18 seconds.
+setInterval(() => {
+  if (!online) return;
+
+  if (Date.now() - lastSeen > 15000) {
+    disconnect();
+  } else {
+    send({type: 'ping'});
+  }
+}, 3000);
+
+window.addEventListener('pagehide', () => {
+  if (peer) peer.destroy();
+});
+</script>
+</body>
+</html>
