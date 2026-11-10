@@ -102,37 +102,32 @@ footer{text-align:center;font-size:12px;margin-top:18px;color:#9194b0}
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
-const isHost = !params.has('room');
-const me = isHost ? 'X' : 'O';
-
 const validID = s =>
   typeof s === 'string' && /^ttt-[a-zA-Z0-9-]{8,80}$/.test(s);
-
 const newID = () => 'ttt-' + Array.from(
   crypto.getRandomValues(new Uint8Array(16)),
   n => n.toString(16).padStart(2, '0')
 ).join('');
-
-const room = isHost
-  ? (validID(params.get('host')) ? params.get('host') : newID())
-  : params.get('room');
-
+const suppliedRoom = params.get('room') || params.get('host');
+const room = suppliedRoom || newID();
+const ownerKey = 'ttt-owner:' + room;
+let rememberedHost = false;
+try { rememberedHost = sessionStorage.getItem(ownerKey) === 'yes'; } catch {}
+let isHost = !suppliedRoom || params.has('host') || rememberedHost;
+let me = isHost ? 'X' : 'O';
+if (isHost) { try { sessionStorage.setItem(ownerKey, 'yes'); } catch {} }
 const invite = new URL(location.href);
 invite.search = '';
 invite.hash = '';
 invite.searchParams.set('room', room);
-
+// The address bar and Copy Invite Link now share the same guest-safe URL.
+try { history.replaceState(null, '', invite.href); } catch {}
 $('invite').value = invite.href;
-$(isHost ? 'youX' : 'youO').textContent = '(you)';
-
-if (isHost) {
-  const own = new URL(location.href);
-  own.search = '';
-  own.searchParams.set('host', room);
-  try {
-    history.replaceState(null, '', own);
-  } catch {}
+function showRole() {
+  $('youX').textContent = isHost ? '(you)' : '';
+  $('youO').textContent = isHost ? '' : '(you)';
 }
+showRole();
 
 const wins = [
   [0,1,2], [3,4,5], [6,7,8],
@@ -173,13 +168,12 @@ const cells = Array.from({length: 9}, (_, i) => {
 });
 
 function render() {
-  $('presenceX').textContent = (isHost ? localReady : online)
-    ? '● Connected'
-    : (isHost ? 'Connecting…' : 'Offline');
-
-  $('presenceO').textContent = (isHost ? online : localReady)
-    ? '● Connected'
-    : (isHost ? 'Waiting…' : 'Connecting…');
+  $('presenceX').textContent = online ? '● Connected to opponent'
+    : isHost ? (localReady ? '● Ready · waiting for opponent' : 'Connecting to service…')
+    : 'Waiting for connection…';
+  $('presenceO').textContent = online ? '● Connected to opponent'
+    : isHost ? 'Waiting for opponent…'
+    : (localReady ? 'Joining room…' : 'Connecting to service…');
 
   $('px').classList.toggle(
     'active',
@@ -194,7 +188,7 @@ function render() {
 
   if (!online) {
     banner = isHost
-      ? 'Share your link to invite Player 2.'
+      ? 'Waiting for Player 2. Copy the invite link and send it to your friend.'
       : 'Connecting to Player 1…';
   } else if (state.phase === 'ready') {
     banner = 'You’re both here. Roll the coin to begin!';
@@ -400,7 +394,7 @@ function attach(connection) {
     if (conn === connection && !online) {
       disconnect();
       message =
-        'Could not connect. Ask Player 1 to keep their tab open, then reconnect.';
+        'Could not connect to your opponent. Keep both tabs open and click Reconnect. If it fails again, try a different network.';
       render();
     }
   }, 20000);
@@ -520,9 +514,21 @@ if (!validID(room)) {
     'PeerJS could not load. Check your internet connection and reconnect.';
   render();
 } else {
-  peer = new Peer(isHost ? room : undefined, {debug: 0});
+  startPeer();
+}
+
+function startPeer() {
+  const current = peer = new Peer(isHost ? room : undefined, {debug: 0});
+  const startupTimer = setTimeout(() => {
+    if (peer === current && !localReady) {
+      message = 'Connection service is taking too long. Check your internet and click Reconnect.';
+      render();
+    }
+  }, 20000);
 
   peer.on('open', () => {
+    if (peer !== current) return;
+    clearTimeout(startupTimer);
     localReady = true;
     message = '';
     render();
@@ -544,6 +550,23 @@ if (!validID(room)) {
   });
 
   peer.on('error', error => {
+    if (peer !== current) return;
+    clearTimeout(startupTimer);
+    // Duplicating a tab can copy sessionStorage. Join the existing host
+    // instead of leaving two tabs trying to own the same room.
+    if (error.type === 'unavailable-id' && isHost) {
+      peer = null;
+      current.destroy();
+      isHost = false;
+      me = 'O';
+      localReady = false;
+      try { sessionStorage.removeItem(ownerKey); } catch {}
+      showRole();
+      message = 'Joining the existing room…';
+      render();
+      startPeer();
+      return;
+    }
     if (
       online &&
       (error.type === 'network' || error.type === 'server-error')
@@ -570,6 +593,7 @@ if (!validID(room)) {
   });
 
   peer.on('disconnected', () => {
+    if (peer !== current) return;
     if (!online) {
       message = 'Signaling disconnected. Reconnect to try again.';
       render();
@@ -580,6 +604,8 @@ if (!validID(room)) {
   });
 
   peer.on('close', () => {
+    if (peer !== current) return;
+    clearTimeout(startupTimer);
     localReady = false;
     disconnect();
   });
@@ -603,3 +629,5 @@ window.addEventListener('pagehide', () => {
 </script>
 </body>
 </html>
+
+<!-- Connection fix: shared-room-v2 -->
